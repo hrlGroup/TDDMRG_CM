@@ -35,6 +35,36 @@ gs_occs = np.diag(rdm)
 ```
 The program views the variable `rdm` as an intermediate variable, and hence will not be affected by it nor aborts even though it is an unrecognized input variable. While allowing for a flexible input value determination, the downside of the above input design, however, is that any syntactical error inside the input file is not always indicated with the location where it happens.
 
+## Orbital Generation 
+
+The first step will be to compute the orbitals for a given molecule, the example below is for H2O. This is done with `get_orbs`. The python scipt `Path to orb gen H2O.py`, shown below, gives an example to generate orbitals using Hartree-Fock
+
+```pyhon
+
+import numpy as np
+
+
+#== General ==#
+prefix = 'H2O'
+
+#== System ==#
+atoms = \
+            '''
+            O   0.000   0.000   0.107;
+            H   0.000   0.785  -0.427;
+            H   0.000  -0.785  -0.427;
+            '''
+basis = 'cc-pvdz'
+symmetry = 'C2v'
+charge = 0
+twosz = 0
+wfnsym = 0
+source = 'rhf'
+
+localize = False
+
+```
+Running `get_orbs H2O.py` this will create the files numpy arrays that include the orbitals, ccupations, energies and reduced density matrix that will be used in the next step of the calculation. Available electronic structure methods are restricted hartree-fock `rhf`, complete active space `casscf` and density functional theory `dft`. For CASSCF calculations, the number of CAS orbitals, core orbitals, and CAS electrons are required. For DFT the exchange correlation `xc` functional must be specified. The orbitals are generated using PySCF. 
 
 ## Ground state DMRG
 
@@ -67,7 +97,7 @@ if do_groundstate:
 do_annihilate = False
 do_timeevo = False
 ```
-Here, it is assumed that some orbitals have previously been calculated and are stored in a numpy file whose full path is `/absolute/path/to/orbital/H2O.orb.npy`. The output of this calculation contains a line that shows the final ground state energy
+Here, it is assumed that some orbitals were calculated in the previous step and are stored in a numpy file whose full path is `/absolute/path/to/orbital/H2O.orb.npy`. The output of this calculation contains a line that shows the final ground state energy
 ```
  Ground state energy =   -76.2393734097
 ```
