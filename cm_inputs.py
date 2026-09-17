@@ -9,7 +9,7 @@ def get_inputs(inp_file):
     '''
     This function returns a dictionary containing the input parameters and their values
     as key-value pairs.
-    
+
     To define a new input parameters, first decide whether this new input parameter is 
     mandatory or optional parameter. If it is a mandatory input, then simply add the 
     following line after the 'inputs = {}' below
@@ -524,6 +524,107 @@ def get_inputs(inp_file):
             inputs['ann_out_cpx'] = ann_out_cpx
         except NameError:
             inputs['ann_out_cpx'] = defvals.def_ann_out_cpx
+
+
+    #==== Delta kick operation parameters ====#
+    try:
+        inputs['do_delta_kick'] = do_delta_kick
+    except NameError:
+        inputs['do_delta_kick'] = False
+
+    if inputs['do_delta_kick'] == True:
+        inputs["delta_kick"] = delta_kick
+        inputs['D_delta_kick_fit'] = D_delta_kick_fit
+
+        try:
+            inputs['delta_kick_inmps_dir'] = delta_kick_inmps_dir
+        except NameError:
+            inputs['delta_kick_inmps_dir'] = 'DEFINE_LATER'
+
+        try:
+            inputs['delta_kick_inmps_fname'] = delta_kick_inmps_fname
+        except NameError:
+            inputs['delta_kick_inmps_fname'] = defvals.def_delta_kick_inmps_fname
+
+        try:
+            inputs['delta_kick_inmps_cpx'] = delta_kick_inmps_cpx
+        except NameError:
+            inputs['delta_kick_inmps_cpx'] = defvals.def_delta_kick_inmps_cpx
+
+        try:
+            inputs['delta_kick_inmps_multi'] = delta_kick_inmps_multi
+        except NameError:
+            inputs['delta_kick_inmps_multi'] = defvals.def_delta_kick_inmps_multi
+
+        try:
+            inputs['delta_kick_outmps_dir'] = delta_kick_outmps_dir
+        except NameError:
+            inputs['delta_kick_outmps_dir'] = 'DEFINE_LATER'
+
+        try:
+            inputs['delta_kick_outmps_fname'] = delta_kick_outmps_fname
+        except NameError:
+            inputs['delta_kick_outmps_fname'] = defvals.def_delta_kick_outmps_fname
+
+        try:
+            inputs['delta_kick_fit_noise'] = delta_kick_fit_noise
+        except NameError:
+            inputs['delta_kick_fit_noise'] = defvals.def_delta_kick_fit_noise
+
+        try:
+            inputs['delta_kick_fit_tol'] = delta_kick_fit_tol
+        except NameError:
+            inputs['delta_kick_fit_tol'] = defvals.def_delta_kick_fit_tol
+
+        try:
+            inputs['delta_kick_fit_steps'] = delta_kick_fit_steps
+        except NameError:
+            inputs['delta_kick_fit_steps'] = defvals.def_delta_kick_fit_steps
+
+        try:
+            inputs['delta_kick_fit_cutoff'] = delta_kick_fit_cutoff
+        except NameError:
+            inputs['delta_kick_fit_cutoff'] = defvals.def_delta_kick_fit_cutoff
+
+        try:
+            inputs['delta_kick_fit_occs'] = delta_kick_fit_occs
+        except NameError:
+            inputs['delta_kick_fit_occs'] = defvals.def_delta_kick_fit_occs
+
+        try:
+            inputs['delta_kick_fit_bias'] = delta_kick_fit_bias
+        except NameError:
+            inputs['delta_kick_fit_bias'] = defvals.def_delta_kick_fit_bias
+
+        try:
+            inputs['normalize_delta_kickout'] = normalize_delta_kickout
+        except NameError:
+            inputs['normalize_delta_kickout'] = defvals.def_normalize_delta_kickout
+
+        try:
+            inputs['save_delta_kick_1pdm'] = save_delta_kick_1pdm
+        except NameError:
+            inputs['save_delta_kick_1pdm'] = defvals.def_save_delta_kick_1pdm
+
+
+    #==== Add a static electric field to the Hamiltonian====#
+    try:
+        inputs["static_electric_field"] = static_electric_field
+    except NameError:
+        inputs["static_electric_field"] = None
+
+    if not inputs['do_delta_kick']:
+        inputs["delta_kick"] = None
+
+    try:
+        inputs["field_origin"] = field_origin
+    except NameError:
+        inputs["field_origin"] = (0.0, 0.0, 0.0)
+
+    try:
+        inputs["include_core_field_energy"] = include_core_field_energy
+    except NameError:
+        inputs["include_core_field_energy"] = True
 
     #==== Time evolution parameters ====#
     # do_timeevo:

@@ -54,6 +54,12 @@ if hasMPI:
     assert commPy.Get_rank() == MPI.rank, f"{commPy.Get_rank()} vs {MPI.rank}"
     assert commPy.Get_size() == MPI.size, f"{commPy.Get_size()} vs {MPI.size}"
     MAIN_PROCESS = MPI.rank == 0
+
+    default_excepthook = sys.excepthook
+    def abort_mpi_on_exception(exc_type, exc_value, exc_traceback):
+        default_excepthook(exc_type, exc_value, exc_traceback)
+        commPy.Abort(1)
+    sys.excepthook = abort_mpi_on_exception
 else:
     MAIN_PROCESS = True
 #############################################
@@ -207,12 +213,40 @@ if MAIN_PROCESS:
     h1eshape = h1e.shape
     g2eshape = g2e.shape
 
+    #==== Modify the integrals for static field and delta kick ====#
+    h1e_kick = None
+    if inputs["static_electric_field"] is not None or inputs["delta_kick"] is not None:
+        origin = np.asarray(inputs["field_origin"], dtype=float)
+
+        with mol.with_common_orig(origin):
+            r_ao = mol.intor("int1e_r", comp=3)
+
+        i0 = inputs["nCore"]
+        i1 = inputs["nCore"] + inputs["nCAS"]
+        c_act = orbs[:, i0:i1]
+
+        if inputs["static_electric_field"] is not None:
+            field = np.asarray(inputs["static_electric_field"], dtype=float)
+            assert field.shape == (3,)
+            h_field_ao = np.einsum("x,xij->ij", field, r_ao)
+            h1e = h1e + c_act.T @ h_field_ao @ c_act
+
+            if inputs["include_core_field_energy"] and inputs["nCore"] > 0:
+                c_core = orbs[:, :inputs["nCore"]]
+                ecore += 2.0 * np.trace(c_core.T @ h_field_ao @ c_core)
+
+        if inputs["delta_kick"] is not None:
+            kick = np.asarray(inputs["delta_kick"], dtype=float)
+            assert kick.shape == (3,)
+            h_kick_ao = np.einsum("x,xij->ij", kick, r_ao)
+            h1e_kick = c_act.T @ h_kick_ao @ c_act
+
     #==== Get the symmetries ====#
     molpro_osym, molpro_wsym = \
         get_syms(mol, inputs['wfn_sym'], inputs['nCore'], inputs['nCAS'], orbs)
     logbook.update({'molpro_osym':molpro_osym, 'molpro_wsym':molpro_wsym})
 else:
-    orbs = h1e = g2e = None
+    orbs = h1e = h1e_kick = g2e = None
     orbs_shape = h1eshape = g2eshape = None
     ecore = None
     molpro_osym = molpro_wsym = None
@@ -222,13 +256,21 @@ else:
 if hasMPI:
     orbs_shape = commPy.bcast(orbs_shape, root = 0)
     h1eshape = commPy.bcast(h1eshape, root = 0)
+    has_delta_kick = commPy.bcast(
+        h1e_kick is not None if MAIN_PROCESS else None, root=0)
     g2eshape = commPy.bcast(g2eshape, root = 0)
     if not MAIN_PROCESS:
         orbs = np.empty(orbs_shape, dtype=np.float64)
         h1e = np.empty(h1eshape, dtype=np.float64)
+        if has_delta_kick:
+            h1e_kick = np.empty(h1eshape, dtype=np.float64)
         g2e = np.empty(g2eshape, dtype=np.float64)
     commPy.Bcast([orbs, MPIpy.DOUBLE], root=0)
     commPy.Bcast([h1e, MPIpy.DOUBLE], root=0)
+    if has_delta_kick:
+        commPy.Bcast([h1e_kick, MPIpy.DOUBLE], root=0)
+    else:
+        h1e_kick = None
     commPy.Bcast([g2e, MPIpy.DOUBLE], root=0)
     ecore = commPy.bcast(ecore, root = 0)
     molpro_osym = commPy.bcast(molpro_osym, root = 0)
@@ -323,18 +365,12 @@ if MAIN_PROCESS:
     #==== Save orbital ordering ====#
     np.save(WDIR + '/' + inputs['prefix'] + '.ord', re_idx)
     
-    re_idx_shape = re_idx.shape
-    re_idx_type = type(re_idx)
     logbook.update({'orb_order_id':re_idx})
 else:
-    re_idx = re_idx_shape = re_idx_type = None
+    re_idx = None
 
 if hasMPI:
-    re_idx_shape = commPy.bcast(re_idx_shape, root = 0)
-    re_idx_type = commPy.bcast(re_idx_type, root = 0)
-    if not MAIN_PROCESS:
-        re_idx = np.empty(re_idx_shape, dtype=re_idx_type)
-    commPy.Bcast([re_idx, MPIpy.INTEGER], root=0)
+    re_idx = commPy.bcast(re_idx if MAIN_PROCESS else None, root=0)
 
 
 #==== Initiate the Hamiltonian MPO ====#
@@ -344,7 +380,7 @@ obj = MYTDDMRG(mol, inputs['nelCAS'], scratch, inputs['memory'],
 obj.verbose = inputs['verbose_lvl']
 obj.init_hamiltonian(pg, nsites, inputs['nelCAS'], inputs['twos'], molpro_wsym, 
                      molpro_osym, e_core=ecore, h1e=h1e, g2e=g2e, orbs=orbs, tol=1E-11, 
-                     idx=re_idx, save_fcidump='FCIDUMP')
+                     idx=re_idx, save_fcidump='FCIDUMP', h1e_kick=h1e_kick)
 
 
 #==== Print symmetries ====#
@@ -420,6 +456,41 @@ if inputs['do_annihilate']:
                        inputs['mrci'])
     _print('\n')
 logbook.update(inputs) 
+
+
+if inputs['do_delta_kick']:
+    #==== Apply the delta kick ====#
+    _print('\n\n\n')
+    _print('-----------------------------------')
+    _print('===================================')
+    _print('>>>> APPLICATION OF DELTA KICK <<<<')
+    _print('===================================')
+    _print('-----------------------------------')
+    _print('')
+    _print('Fitting bond dimensions schedule = ', inputs['D_delta_kick_fit'])
+    _print('Fitting noises schedule = ', inputs['delta_kick_fit_noise'])
+    if inputs['delta_kick_inmps_dir'] == 'DEFINE_LATER':
+        inputs['delta_kick_inmps_dir'] = scratch
+        kw = 'delta_kick_inmps_dir'
+        if inputs['dump_inputs']:
+            _print('  ', kw, ' = ', inputs[kw])
+    if inputs['delta_kick_outmps_dir'] == 'DEFINE_LATER':
+        inputs['delta_kick_outmps_dir'] = scratch
+        kw = 'delta_kick_outmps_dir'
+        if inputs['dump_inputs']:
+            _print('  ', kw, ' = ', inputs[kw])
+    logbook = \
+        obj.delta_kick(logbook,
+                       inputs['D_delta_kick_fit'], inputs['delta_kick_fit_noise'],
+                       inputs['delta_kick_fit_tol'], inputs['delta_kick_fit_steps'],
+                       inputs['delta_kick_inmps_dir'], inputs['delta_kick_inmps_fname'],
+                       inputs['delta_kick_inmps_cpx'], inputs['delta_kick_inmps_multi'],
+                       inputs['delta_kick_outmps_dir'], inputs['delta_kick_outmps_fname'],
+                       inputs['delta_kick_fit_cutoff'], inputs['delta_kick_fit_occs'],
+                       inputs['delta_kick_fit_bias'], inputs['normalize_delta_kickout'],
+                       inputs['save_delta_kick_1pdm'], inputs['mrci'])
+    _print('\n')
+logbook.update(inputs)
 
 
 #==== Run the DMRG TD-propagation ====#

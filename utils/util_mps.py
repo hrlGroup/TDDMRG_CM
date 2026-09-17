@@ -24,7 +24,7 @@
 #OLD_CPX         hasMPI = False
 
 import numpy as np
-import subprocess, shutil, os
+import shutil, os
 from TDDMRG_CM.utils.util_complex_type import get_complex_type
 
 
@@ -96,15 +96,15 @@ def MPS_fitting(fitket, mps, rmpo, fit_bond_dims, fit_nsteps, fit_noises,
         lme = None
     else:
         lme = bs.MovingEnvironment(lmpo, fitket, fitket, "PERT")
-        lme.init_environments(False)
         if delay_contract:
             lme.delayed_contraction = b2.OpNamesSet.normal_ops()
+        lme.init_environments(False)
     #fordebug rme = MovingEnvironment(lmpo, mps, mps, "RHS")
     rme = bs.MovingEnvironment(rmpo, fitket, mps, "RHS")
-    rme.init_environments(False)
     if delay_contract:
         rme.delayed_contraction = b2.OpNamesSet.normal_ops()
-        
+    rme.cached_contraction = (lme is None)    
+    rme.init_environments(False)
     #==== Begin MPS fitting ====#
     if fit_margin == None:
         fit_margin = max(int(mps.info.bond_dim / 10.0), 100)
@@ -158,38 +158,32 @@ def copyIt(fnam:str, mpsSaveDir:str, MPI:MPICommunicator=None):
         # ATTENTION: For multi node  calcs, I assume that all nodes have one global scratch dir
         return
     lastName = os.path.split(fnam)[-1]
-    fst = f"cp -p {fnam} {mpsSaveDir}/{lastName}"
-    # subprocess is favored but sometimes there is a problem due to memory allocation
+    dst = os.path.join(mpsSaveDir, lastName)
+    tmp = dst + f".tmp.{os.getpid()}"
     try:
-        subprocess.call(fst.split())
-    except: # May problem due to allocate memory
-        print(f"# ATTENTION: saveMPStoDir with command'{fst}' failed!")
-        print(f"# Error message: {sys.exc_info()[0]}")
-        print(f"# Error message: {sys.exc_info()[1]}")
-        print(f"# Try again with shutil")
-        try:
-            # vv does not copy metadata 
-            shutil.copyfile(fnam, mpsSaveDir+"/"+lastName)
-        except:
-            print(f"\t# ATTENTION: saveMPStoDir with shutil also failed")
-            print(f"\t# Error message: {sys.exc_info()[0]}")
-            print(f"\t# Error message: {sys.exc_info()[1]}")
-            print(f"\t# Try again with syscal")
-            os.system(fst)
+        shutil.copy2(fnam, tmp)
+        with open(tmp, 'rb') as f:
+            os.fsync(f.fileno())
+        os.replace(tmp, dst)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 #################################################
 
 
 #################################################
 def saveMPStoDir(mps:bs.MPS|bs.MultiMPS, mpsSaveDir:str, MPI:MPICommunicator=None):
 
+    if MPI is not None:
+        MPI.barrier()
     mps.save_data() # Important! Saves canonical form
-    #OLD mkDir(mpsSaveDir)
-    if not os.path.exists(mpsSaveDir):
-        try:
-            os.makedirs(mpsSaveDir)
-        except FileExistsError: # don't ask...
-            pass
-    mps.info.save_data(f"{mpsSaveDir}/mps_info.bin")
+    if MPI is not None:
+        MPI.barrier()
+    if MPI is None or MPI.rank == 0:
+        os.makedirs(mpsSaveDir, exist_ok=True)
+        mps.info.save_data(f"{mpsSaveDir}/mps_info.bin")
+    if MPI is not None:
+        MPI.barrier()
 
     #==== Duplicate MPS info files in scratch (obtained ====#
     #====     from the MPSInfo object) to mpsSaveDir    ====#
@@ -234,23 +228,16 @@ def copyItRev(fnam:str, mpsSaveDir:str, MPI:MPICommunicator=None):
         # ATTENTION: For multi node  calcs, I assume that all nodes have one global scratch dir
         return
     lastName = os.path.split(fnam)[-1]
-    fst = f"cp -p {mpsSaveDir}/{lastName} {fnam}"
+    src = os.path.join(mpsSaveDir, lastName)
+    tmp = fnam + f".tmp.{os.getpid()}"
     try:
-        subprocess.call(fst.split())
-    except: # May problem due to allocate memory, but why??? 
-        print(f"# ATTENTION: loadMPSfromDir with command'{fst}' failed!")
-        print(f"# Error message: {sys.exc_info()[0]}")
-        print(f"# Error message: {sys.exc_info()[1]}")
-        print(f"# Try again with shutil")
-        try:
-            # vv does not copy metadata -.-
-            shutil.copyfile(mpsSaveDir+"/"+lastName, fnam)
-        except:
-            print(f"\t# ATTENTION: loadMPSfromDir with shutil also failed")
-            print(f"\t# Error message: {sys.exc_info()[0]}")
-            print(f"\t# Error message: {sys.exc_info()[1]}")
-            print(f"\t# Try again with syscal")
-            os.system(fst)
+        shutil.copy2(src, tmp)
+        with open(tmp, 'rb') as f:
+            os.fsync(f.fileno())
+        os.replace(tmp, fnam)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 #################################################
 
 
@@ -302,6 +289,7 @@ def loadMPSfromDir(mpsSaveDir:str, mpstag:str, complex_mps:bool, mps_type:dict, 
                    ref_center=0, cached_contraction:bool=True, MPI:MPICommunicator=None, 
                    prule=None) -> bs.MPS | bs.MultiMPS:
 
+
     if MPI is not None:
         assert prule is not None, 'prule is required when the MPI input is not None.'
     if mps_type['type'] == 'multi':
@@ -338,6 +326,7 @@ def loadMPSfromDir(mpsSaveDir:str, mpstag:str, complex_mps:bool, mps_type:dict, 
 
     #==== Duplicate MPS files in mpsSaveDir to the ====#
     #==== scratch obtained from the MPSInfo object ====#
+    mps_info.load_mutable()
     if mps_type['type'] == 'multi':
         mps = bs.MultiMPS(mps_info)          # 1)
     else:
@@ -348,8 +337,7 @@ def loadMPSfromDir(mpsSaveDir:str, mpstag:str, complex_mps:bool, mps_type:dict, 
         if MPI is not None:
             MPI.barrier()
     # NOTES:
-    # 1) At this point, mps is just a dummy MPS object used to get
-    #    the path to the scratch folder.
+    # 1) The MPS object is used here to obtain its scratch filenames.
     if mps_type['type'] == 'multi':
         for iroot in range(0, mps_type['nroots']):
             fnam = mps.get_wfn_filename(iroot, "")
@@ -360,17 +348,6 @@ def loadMPSfromDir(mpsSaveDir:str, mpstag:str, complex_mps:bool, mps_type:dict, 
                 MPI.barrier()
 
     
-    #==== Construct the actual MPS object ====#
-    if mps_type['type'] == 'multi':
-        mps = bs.MultiMPS(mps_info).deep_copy(mps_info.tag)
-    else:
-        mps = bs.MPS(mps_info).deep_copy(mps_info.tag)
-    if MPI is not None:
-        MPI.barrier()
-    mps_info = mps.info
-    mps_info.load_mutable()
-
-
     #==== Take care of and adjust the max bond dimension ====#
     max_bdim = max([x.n_states_total for x in mps_info.left_dims])
     if mps_info.bond_dim < max_bdim:
@@ -379,10 +356,17 @@ def loadMPSfromDir(mpsSaveDir:str, mpstag:str, complex_mps:bool, mps_type:dict, 
     if mps_info.bond_dim < max_bdim:
         mps_info.bond_dim = max_bdim
     mps.load_data()
+    mps.load_mutable()
     if MPI is not None:
-        MPI.barrier()
+        mps_state = np.zeros(2 + mps_info.n_sites, dtype=np.intc)
+        if MPI.rank == 0:
+            mps_state[:] = [mps.center, mps.dot] + [
+                ord(x) for x in str(mps.canonical_form)]
+        MPI.broadcast(mps_state, 0)
+        mps.center = int(mps_state[0])
+        mps.dot = int(mps_state[1])
+        mps.canonical_form = ''.join(chr(x) for x in mps_state[2:])
 
-        
     #==== Change canonical form for hybrid complex MPS ====#
     if mps.center == mps.n_sites - 1:
         if complex_mps and mps_type['type'] == 'multi':
@@ -412,19 +396,25 @@ def loadMPSfromDir(mpsSaveDir:str, mpstag:str, complex_mps:bool, mps_type:dict, 
 
 
     #==== Further change canonical form (???) ====#
-    if (mps.center == 0) != (ref_center == 0):      # 2)
+    if mps.center != ref_center:      # 2)
         _print('\n\nChange canonical form ...')
         cf = str(mps.canonical_form)
-        ime = bs.MovingEnvironment(impo, mps, mps, "IEX")
-        ime.delayed_contraction = b2.OpNamesSet.normal_ops()
-        ime.cached_contraction = cached_contraction
-        ime.init_environments(False)
-        if complex_mps and mps_type['type'] == 'multi':
-            expect = brs.ComplexExpect(ime, mps.info.bond_dim, mps.info.bond_dim)
+        if ref_center < mps.center:
+            if mps.dot == 2:
+                mps.center += 1
+                if mps.canonical_form[-1] in "CS":
+                    mps.canonical_form = mps.canonical_form[:-1] + "S"
+                else:
+                    mps.canonical_form = mps.canonical_form[:-1] + "T"
+            while mps.center != ref_center:
+                mps.move_left(None, prule if MPI is not None else None)
         else:
-            expect = bs.Expect(ime, mps.info.bond_dim, mps.info.bond_dim)
-        #expect.iprint = max(min(outputlevel, 3), 0)
-        expect.solve(True, mps.center == 0)
+            mps.canonical_form = "K" + mps.canonical_form[1:]
+            while (mps.center != mps.n_sites - 1 and
+                   mps.center != ref_center + mps.dot - 1):
+                mps.move_right(None, prule if MPI is not None else None)
+            if mps.dot == 2:
+                mps.center -= 1
         if MPI is not None:
             MPI.barrier()
         mps.save_data()
@@ -432,10 +422,8 @@ def loadMPSfromDir(mpsSaveDir:str, mpstag:str, complex_mps:bool, mps_type:dict, 
             MPI.barrier()
         _print(cf + ' -> ' + mps.canonical_form)
     # NOTES:
-    # 2) This conditional will be executed if the MPS center (which can actually only
-    #    be either 0 or n_sites-2 (2-site mode)) is not equal to reference center. Hence
-    #    this conditional block works to enforce the position of the MPS center according
-    #    to the value of reference center.
+    # 2) This is the direct tensor rotation used by DMRGDriver.align_mps_center.
+    #    Center alignment does not require an identity-MPO expectation sweep.
 
 
     forward = mps.center == 0
